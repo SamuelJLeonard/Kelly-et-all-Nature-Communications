@@ -1,0 +1,158 @@
+# packages etc ------------------------------------------------------------
+  
+  rm(list=ls())
+  memory.size(max=T)
+  library("RODBC")
+  library("sqldf")
+  library("dplyr")
+  library("splines")
+  library("ggplot2")
+  library("reshape2")
+  library('haven')
+  library('xlsx')
+  library('readxl')
+  library('epitools')
+  library('cobalt')
+  library('coxphw')
+  library('survival')
+  library('survminer')
+  library('ggfortify')
+  library('tableone')
+  library('survey')
+  library('jskm')
+  library('gridExtra')
+  library('scales')
+  library('cmprsk')
+  library('riskRegression')
+  library('boot')
+  library('rms')
+  load()
+
+# risk function ------------------------------------------------------------
+  
+  get.risk <- function(data, indices){
+    
+    d <- data[indices, ]
+    
+    #######################################
+    ##### weights #########################
+    #######################################
+    
+      ###########################
+      ## model ##################
+      ###########################
+      
+         treatment.model <- glm(pfizer_booster ~
+                                  ns(Age, df = 5)+
+                                  Gender +
+                                  race_simple +
+                                  Ethnicity +
+                                  MaritalStatus +
+                                  urban_simple +
+                                  VA_priority_simple +
+                                  reinfection +
+                                  Home_based_primary_care +
+                                  SCI_clinic +
+                                  Hypertension +
+                                  CHF +
+                                  IHD +
+                                  Diabetes +
+                                  Stroke_TIA +
+                                  COPD_Bronchiectasis +
+                                  Cirrhosis +
+                                  Dialysis +
+                                  CKD +
+                                  Dementia +
+                                  Immunocompromised+
+                                  cancer_solid_organ +
+                                  cancer_lymphoma_leukemia+
+				  cancer_other+
+                                  Current_smoker+
+                                  Alcohol_abuse+
+                                  Substance_use+
+                                  Homelessness+
+                                  BMI_cat+
+                                  primary_quarter+
+                                  CAN_simple+
+                                  booster_location,
+                                data = d, family = binomial(link = logit))
+    
+         ############################
+         ### get weights ############
+         ############################
+         
+          predicted <- predict(treatment.model, type = "response")
+          d$e = predicted
+          
+          p.Z.1 = nrow(filter(d, booster_type == "PFIZER"))/nrow(d)
+          p.Z.0 = 1 - p.Z.1
+          
+          d <- d %>% mutate(IPT = (pfizer_booster*p.Z.1)/e + ((1-pfizer_booster)*p.Z.0)/(1-e))
+          weight.percentile = quantile(d$IPT, 0.95)
+          d$IPT[d$IPT > weight.percentile] = weight.percentile
+          
+          d.pfi <- d %>% filter(pfizer_booster == 1)
+          d.mod <- d %>% filter(pfizer_booster == 0)
+    
+    ######################################
+    #### get risks for each outcome ######
+    ######################################
+    
+        ##################################
+        ### breakthrough #################
+        ##################################
+          
+          fg.break <- finegray(Surv(breakthrough_survival, breakthrough_cause) ~ pfizer_booster, data = d, weights = IPT)
+          fg.break.model <- cph(Surv(fgstart, fgstop, fgstatus) ~ strat(pfizer_booster), data = fg.break, weights = fgwt, surv = TRUE, robust = TRUE)
+          strata.predict <- survest(fg.break.model, times = 32*7, data.frame(pfizer_booster = c(0, 1)))
+          mod.breakthrough <- strata.predict$surv[1]
+          pfi.breakthrough <- strata.predict$surv[2]
+          
+          rm(fg.break, fg.break.model)
+          
+        ##################################
+        ### pna ##########################
+        ##################################
+          
+          fg.pna <- finegray(Surv(pna_survival, pna_cause) ~ pfizer_booster, data = d, weights = IPT)
+          fg.pna.model <- cph(Surv(fgstart, fgstop, fgstatus) ~ strat(pfizer_booster), data = fg.pna, weights = fgwt, surv = TRUE, robust = TRUE)
+          strata.predict <- survest(fg.pna.model, times = 32*7, data.frame(pfizer_booster = c(0, 1)))
+          mod.pna <- strata.predict$surv[1]
+          pfi.pna <- strata.predict$surv[2]
+          
+          rm(fg.pna, fg.pna.model)
+          
+        ##################################
+        ### severe #######################
+        ##################################
+        
+          fg.severe <- finegray(Surv(severe_survival, severe_cause) ~ pfizer_booster, data = d, weights = IPT)
+          fg.severe.model <- cph(Surv(fgstart, fgstop, fgstatus) ~ strat(pfizer_booster), data = fg.severe, weights = fgwt, surv = TRUE, robust = TRUE)
+          strata.predict <- survest(fg.severe.model, times = 32*7, data.frame(pfizer_booster = c(0, 1)))
+          mod.severe <- strata.predict$surv[1]
+          pfi.severe <- strata.predict$surv[2]
+          
+          rm(fg.severe, fg.severe.model)
+          
+    ################################
+    ### create/return result #######
+    ################################
+          
+      res <- c(mod.breakthrough, mod.pna, mod.severe, pfi.breakthrough, pfi.pna, pfi.severe)
+      names(res) <- c("Moderna breakthrough", "Moderna pna", "Moderna severe", "Pfizer breakthrough", "Pfizer pna", "Pfizer severe")
+  
+      return(res)
+    
+  }
+  
+# generate samples ------------------------------------------------------------
+  
+  t <- Sys.time()
+  boot.results <- boot(data = booster.analytic, statistic = get.risk, R = 200)
+  Sys.time() - t
+  
+  boot.results.final <- boot.results$t
+  
+  filename = paste0()
+  save(boot.results.final, file = filename)
+  

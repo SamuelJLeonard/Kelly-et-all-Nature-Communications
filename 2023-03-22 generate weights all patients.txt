@@ -1,0 +1,366 @@
+
+
+# packages etc ------------------------------------------------------------
+  
+  rm(list=ls())
+  memory.size(max=T)
+  library("RODBC")
+  library("sqldf")
+  library("dplyr")
+  library("splines")
+  library("ggplot2")
+  library("reshape2")
+  library('haven')
+  library('xlsx')
+  library('readxl')
+  library('epitools')
+  library('cobalt')
+  library('coxphw')
+  library('survival')
+  library('survminer')
+  library('ggfortify')
+  library('tableone')
+  library('survey')
+  library('jskm')
+  library('gridExtra')
+  library('scales')
+  library('cmprsk')
+  library('riskRegression')
+  setwd()
+  load() 
+
+# treatment regression ----------------------------------------------------
+
+  treatment_model <- glm(pfizer_booster ~
+                           ns(Age, df = 5)+
+                           Gender +
+                           race_simple +
+                           Ethnicity +
+                           MaritalStatus +
+                           urban_simple +
+                           VA_priority +
+                           reinfection +
+                           Home_based_primary_care +
+                           SCI_clinic +
+                           Hypertension +
+                           CHF +
+                           IHD +
+                           Diabetes +
+                           Stroke_TIA +
+                           COPD_Bronchiectasis +
+                           Cirrhosis +
+                           Dialysis +
+                           CKD +
+                           Dementia +
+                           Immunocompromised+
+                           cancer_solid_organ +
+                           cancer_lymphoma_leukemia+
+			   cancer_other+
+                           Current_smoker+
+                           Alcohol_abuse+
+                           Substance_use+
+                           Homelessness+
+                           BMI_cat+
+                           primary_quarter+
+                           CAN_simple+
+                           booster_location,
+                         data = booster.analytic, family = binomial(link = logit))
+
+  predicted <- predict(treatment_model, type = "response")
+  booster.analytic.full.prop$e = predicted
+  
+  p.Z.1 = nrow(filter(booster.analytic.full.prop, pfizer_booster == 1))/nrow(booster.analytic.full.prop)
+  p.Z.0 = 1 - p.Z.1
+  
+  ###########################
+  ### trim weights ##########
+  ###########################
+  
+    booster.analytic.full.prop <- booster.analytic.full.prop %>% mutate(IPT = (pfizer_booster*p.Z.1)/e + ((1-pfizer_booster)*p.Z.0)/(1-e))
+    weight.percentile = quantile(booster.analytic.full.prop$IPT, 0.95)
+    booster.analytic.full.prop$IPT[booster.analytic.full.prop$IPT > weight.percentile] = weight.percentile
+     
+    filename = paste0()
+    save(booster.analytic.full.prop, file = filename)
+  
+# balance diagnostics -----------------------------------------------------
+    
+  rm(list = ls()) 
+  load()
+  booster.analytic.prop <- booster.analytic.full.prop
+  booster.analytic.prop <- booster.analytic.prop %>%
+    mutate(Male = case_when(Gender == "M" ~ 1, TRUE ~ 0), 
+           Female = case_when(Gender == "F" ~ 1, TRUE ~ 0))
+  booster.analytic.prop$Ethnicity <- factor(booster.analytic.prop$Ethnicity, levels = c("NOT HISPANIC OR LATINO", "HISPANIC OR LATINO"))
+  booster.analytic.prop$MaritalStatus <- factor(booster.analytic.prop$MaritalStatus, levels = c("NOT MARRIED", "MARRIED"))
+  booster.analytic.prop$CKD <- factor(booster.analytic.prop$CKD, levels = c("NO CKD", "CKD", "SEVERE CKD"))
+  booster.analytic.prop$race_simple <- factor(booster.analytic.prop$race_simple, levels = c("WHITE", "BLACK OR AFRICAN AMERICAN", "OTHER OR UNKNOWN"))
+  booster.analytic.prop$BMI_cat <- factor(booster.analytic.prop$BMI_cat, levels = c("< 18.5", "18.5 - 24.9", "25 - 29.9", ">= 30", "UNKNOWN"))
+  booster.analytic.prop$primary_quarter <- factor(booster.analytic.prop$primary_quarter, levels = c("DEC20 - FEB21",
+                                                                                                    "MAR21 - MAY21",
+                                                                                                    "JUN21 - AUG21",
+                                                                                                    "SEP21 - NOV21",
+                                                                                                    "DEC21 - FEB22"))
+  
+  female <- booster.analytic.prop[ , c("Female")]
+  
+  covs <- booster.analytic.prop[ , c("Male", "Age", "race_simple", "Ethnicity", "MaritalStatus", "urban_simple", "VA_priority_simple", 
+                                     "reinfection",
+                                     "BMI_cat",
+                                     
+                                     "Hypertension", 
+                                     "CHF", "IHD", "Diabetes", "Stroke_TIA", "COPD_Bronchiectasis", 
+                                     "Cirrhosis", "Dementia", "Immunocompromised", "SCI_clinic", "CKD", "Dialysis", 
+                                     "cancer_solid_organ", "cancer_lymphoma_leukemia", 
+                                     "cancer_other", "Home_based_primary_care",
+                                     "Current_smoker", "Alcohol_abuse", "Substance_use", "Homelessness",
+                                     "CAN_simple", "primary_quarter", "booster_location")]
+  
+  
+  binary.covs <- covs %>% select(-Age)
+  
+  cont.covs <- covs %>% select(Age)
+  
+  #############################################################
+  #############################################################
+  ####### Create formatted balance table ######################
+  #############################################################
+  #############################################################
+  
+  balance.summary.female <- bal.tab(female, treat = booster.analytic.prop$pfizer_booster, weights = booster.analytic.prop$IPT, method = "weighting", disp = c("means", "sds"), stats = "mean.diffs", 
+                                    un = TRUE)
+  
+  balance.summary <- bal.tab(covs, treat = booster.analytic.prop$pfizer_booster, weights = booster.analytic.prop$IPT, method = "weighting", disp = c("means", "sds"), stats = "mean.diffs", 
+                             un = TRUE)
+  
+  
+  balance <- rbind(balance.summary.female$Balance, balance.summary$Balance)
+  balance <- balance[c(2, 1, 3:nrow(balance)), ]
+  
+  max.diff <- max(balance$Diff.Adj)
+  max.diff.2 <- max(balance$Diff.Un)
+  
+  
+  mod.total <- nrow(filter(booster.analytic.prop, pfizer_booster == 0))
+  pfi.total <- nrow(filter(booster.analytic.prop, pfizer_booster == 1))
+  
+  w.mod.total <- round(sum(filter(booster.analytic.prop, pfizer_booster == 0)$IPT), 1)
+  w.pfi.total <- round(sum(filter(booster.analytic.prop, pfizer_booster == 1)$IPT), 1)
+  
+  balance <- balance %>% mutate(N.moderna = case_when(Type == "Binary" ~ M.0.Un*mod.total, 
+                                                      TRUE ~ M.0.Un),
+                                N.pfizer = case_when(Type == "Binary" ~ M.1.Un*pfi.total, 
+                                                     TRUE ~ M.1.Un),
+                                N.weighted.moderna = case_when(Type == "Binary" ~ M.0.Adj*w.mod.total, 
+                                                               TRUE ~ M.0.Adj),
+                                N.weighted.pfizer = case_when(Type == "Binary" ~ M.1.Adj*w.pfi.total, 
+                                                              TRUE ~ M.1.Adj))
+  
+  balance <- balance[ , c("Type", "N.moderna", "M.0.Un", "SD.0.Un", "N.pfizer", "M.1.Un", "SD.1.Un", "Diff.Un", "N.weighted.moderna", "M.0.Adj", "SD.0.Adj", "N.weighted.pfizer", "M.1.Adj", "SD.1.Adj", "Diff.Adj")]
+  
+  final.balance <- balance
+  
+  ########################################
+  ######## round #########################
+  ########################################
+  
+  final.balance$N.moderna = round(final.balance$N.moderna, 1)
+  final.balance$N.pfizer = round(final.balance$N.pfizer, 1)
+  final.balance$N.weighted.moderna = round(final.balance$N.weighted.moderna, 1)
+  final.balance$N.weighted.pfizer = round(final.balance$N.weighted.pfizer, 1)
+  final.balance$M.0.Un = round(final.balance$M.0.Un, 3)
+  final.balance$M.1.Un = round(final.balance$M.1.Un, 3)
+  final.balance$M.0.Adj = round(final.balance$M.0.Adj, 3)
+  final.balance$M.1.Adj = round(final.balance$M.1.Adj, 3)
+  
+  ###########################
+  ### final columns #########
+  ###########################
+  
+  final <- final.balance %>% 
+    mutate(`Moderna Unadjusted` = case_when(Type == "Binary" ~ paste0(N.moderna, " (", round(M.0.Un*100, 1), ")"), 
+                                            TRUE ~ paste0(N.moderna, " (", round(SD.0.Un, 2), ")")),
+           
+           `Pfizer Unadjusted` = case_when(Type == "Binary" ~ paste0(N.pfizer, " (", round(M.1.Un*100, 1), ")"), 
+                                           TRUE ~ paste0(N.pfizer, " (", round(SD.1.Un, 2), ")")),
+           
+           `Moderna Weighted` = case_when(Type == "Binary" ~ paste0(N.weighted.moderna, " (", round(M.0.Adj*100, 2), ")"), 
+                                          TRUE ~ paste0(N.weighted.moderna, " (", round(SD.0.Adj, 2), ")")),
+           
+           `Pfizer Weighted` = case_when(Type == "Binary" ~ paste0(N.weighted.pfizer, " (", round(M.1.Adj*100, 2), ")"), 
+                                         TRUE ~ paste0(N.weighted.pfizer, " (", round(SD.1.Adj, 2), ")"))) %>%
+    select(`Moderna Unadjusted`, `Pfizer Unadjusted`, `Moderna Weighted`, `Pfizer Weighted`)
+  
+  #########################
+  ### add commas ##########
+  #########################
+  
+  add_comma <- function(pt1) {
+    require(stringr)
+    pt1_out <- pt1
+    for(i in 1:ncol(pt1)) {
+      cur_column <- pt1[, i]
+      num_after <- str_extract(cur_column, '[0-9.]+\\b') %>% as.numeric %>% comma %>% str_replace('(\\.00|NA)', '') %>% trimws
+      pt1_out[, i] <- str_replace(string=pt1_out[, i], pattern='[0-9.]+\\b', replacement=num_after)
+    }
+    return(pt1_out)
+  }
+  
+  final.balance.comma <- final %>% add_comma
+  
+  ###############################
+  ### add N #####################
+  ###############################
+  
+  n.frame <- data.frame(`Moderna Unadjusted` = mod.total, `Pfizer Unadjusted` = pfi.total, `Moderna Weighted` = w.mod.total, `Pfizer Weighted` = w.pfi.total)
+  n.frame <- n.frame %>% add_comma
+  colnames(n.frame) = colnames(final.balance.comma)
+  
+  final.balance.comma <- rbind(n.frame, final.balance.comma)
+  
+  ########################
+  #### fix rownames ######
+  ########################
+  
+  rownames(final.balance.comma) <- c(
+    "N", 
+    "Male", 
+    "Female",
+    "Age", 
+    "  White",
+    "  Black or African American", 
+    "  Unknown", 
+    "Hispanic or Latino Ethnicity (regardless of race)", 
+    "Currently Married", 
+    "Highly Rural or unknown", 
+    "Rural", 
+    "Urban", 
+    "  1-4", 
+    "  5-6", 
+    "  7-8", 
+    "Reinfection", 
+    "  <18.5", 
+    "  18.5-24.9", 
+    "  25-29.9",
+    "  >=30", 
+    "BMI unknown", 
+    "  Hypertension", 
+    "  CHF", 
+    "  IHD", 
+    "  Diabetes", 
+    "  Stroke TIA", 
+    "  COPD Bronchiectasis", 
+    "  Cirrhosis", 
+    "  Dementia", 
+    "  Immunocompromised", 
+    "  Spinal cord injury", 
+    "  No CKD", 
+    "  CKD", 
+    "  Severe CKD", 
+    "  Dialysis", 
+    "  Cancer solid organ", 
+    "  Cancer lymphoma leukemia", 
+    "  Cancer other", 
+    "  Home based primary care", 
+    
+    "Current smoker", 
+    "Alcohol use disorder", 
+    "Substance use disorder", 
+    "Housing problems", 
+    
+    "  0-49.9", 
+    "  50-74.9", 
+    "  75-100", 
+    
+    "  12/2020-02/2021", 
+    "  03/2021-05/2021", 
+    "  06/2021-08/2021", 
+    "  09/2021-11/2021", 
+    "  12/2021-02/2022", 
+    
+    "booster_location_358", "booster_location_402", "booster_location_405", 
+    "booster_location_436", "booster_location_437", "booster_location_438", 
+    "booster_location_442", "booster_location_459", "booster_location_460", 
+    "booster_location_463", "booster_location_501", "booster_location_502", 
+    "booster_location_503", "booster_location_504", "booster_location_506", 
+    "booster_location_508", "booster_location_509", "booster_location_512", 
+    "booster_location_515", "booster_location_516", "booster_location_517", 
+    "booster_location_518", "booster_location_519", "booster_location_520", 
+    "booster_location_521", "booster_location_523", "booster_location_526", 
+    "booster_location_528", "booster_location_529", "booster_location_531", 
+    "booster_location_534", "booster_location_537", "booster_location_538", 
+    "booster_location_539", "booster_location_540", "booster_location_541", 
+    "booster_location_542", "booster_location_544", "booster_location_546", 
+    "booster_location_548", "booster_location_549", "booster_location_550", 
+    "booster_location_552", "booster_location_553", "booster_location_554", 
+    "booster_location_556", "booster_location_557", "booster_location_558", 
+    "booster_location_561", "booster_location_562", "booster_location_564", 
+    "booster_location_565", "booster_location_568", "booster_location_570", 
+    "booster_location_573", "booster_location_575", "booster_location_578", 
+    "booster_location_580", "booster_location_581", "booster_location_583", 
+    "booster_location_585", "booster_location_586", "booster_location_589", 
+    "booster_location_590", "booster_location_593", "booster_location_595", 
+    "booster_location_596", "booster_location_598", "booster_location_600", 
+    "booster_location_603", "booster_location_605", "booster_location_607", 
+    "booster_location_608", "booster_location_610", "booster_location_612", 
+    "booster_location_613", "booster_location_614", "booster_location_618", 
+    "booster_location_619", "booster_location_620", "booster_location_621", 
+    "booster_location_623", "booster_location_626", "booster_location_629", 
+    "booster_location_630", "booster_location_631", "booster_location_632", 
+    "booster_location_635", "booster_location_636", "booster_location_637", 
+    "booster_location_640", "booster_location_642", "booster_location_644", 
+    "booster_location_646", "booster_location_648", "booster_location_649", 
+    "booster_location_650", "booster_location_652", "booster_location_653", 
+    "booster_location_654", "booster_location_655", "booster_location_656", 
+    "booster_location_657", "booster_location_658", "booster_location_659", 
+    "booster_location_660", "booster_location_662", "booster_location_663", 
+    "booster_location_664", "booster_location_666", "booster_location_667", 
+    "booster_location_668", "booster_location_671", "booster_location_672", 
+    "booster_location_673", "booster_location_674", "booster_location_675", 
+    "booster_location_676", "booster_location_678", "booster_location_679", 
+    "booster_location_687", "booster_location_688", "booster_location_689", 
+    "booster_location_691", "booster_location_692", "booster_location_693", 
+    "booster_location_695", "booster_location_740", "booster_location_756", 
+    "booster_location_757", "booster_location_MISSING")
+  
+  colnames(final.balance.comma) = c("mRNA-1273 x3 Unweighted", "BNT162b2 x3 Unweighted", "mRNA-1273 x3 Weighted", "BNT162b2 x3 Weighted")
+  
+
+# add empy rownames -------------------------------------------------------
+  
+  final.balance.comma <- final.balance.comma[c(-52:-nrow(final.balance.comma)), ]
+  
+  rowname_add <- function(tab, before, new_name){
+    
+    tab <- tab %>%
+      add_row(
+        `mRNA-1273 x3 Unweighted` = "", 
+        `BNT162b2 x3 Unweighted` = "", 
+        `mRNA-1273 x3 Weighted` = "", 
+        `BNT162b2 x3 Weighted` = "",
+        .before = which(rownames(tab) == before)
+      )
+    rownames(tab)[which(rownames(tab) == before) - 1] = new_name
+    return(tab)
+  }
+  
+  final.balance.comma <- rowname_add(final.balance.comma, "  White", "Race")
+  final.balance.comma <- rowname_add(final.balance.comma, "  1-4", "VHA Priority")
+  final.balance.comma <- rowname_add(final.balance.comma, "  <18.5", "BMI")
+  final.balance.comma <- rowname_add(final.balance.comma, "  Hypertension", "Comorbidities associated with severe COVID-19 illness")
+  final.balance.comma <- rowname_add(final.balance.comma, "  0-49.9", "CAN")
+  final.balance.comma <- rowname_add(final.balance.comma, "  12/2020-02/2021", "Primary quarter")
+  
+  final.balance.comma <- final.balance.comma %>%
+    add_row(
+      `mRNA-1273 x3 Unweighted` = paste0("Standardized differences in weighted samples were less than ", round(max.diff, 2), " for all variables"), 
+      `BNT162b2 x3 Unweighted` = "", 
+      `mRNA-1273 x3 Weighted` = "", 
+      `BNT162b2 x3 Weighted` = "",
+      .before = 1
+      )
+  
+  filename = paste0()
+  write.xlsx(final.balance.comma, file = filename, 
+                 row.names = TRUE)  
+ 
